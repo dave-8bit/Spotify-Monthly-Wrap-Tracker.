@@ -169,8 +169,12 @@ function App() {
       }
     };
 
-    getStats();
-    initAuth();
+    const runInitSequence = async () => {
+      await initAuth();
+      await getStats();
+    };
+
+    runInitSequence();
   }, []);
 
   const exportImage = async () => {
