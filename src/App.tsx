@@ -44,11 +44,27 @@ function App() {
     const initAuth = async () => {
       try {
         const params = new URLSearchParams(window.location.search);
-        if (params.has('code')) {
+        const code = params.get('code');
+        const error = params.get('error');
+        
+        if (error) {
+          console.error("❌ Spotify rejected auth:", error);
+          setError(`Spotify auth error: ${error}`);
+          return;
+        }
+        
+        if (code) {
           console.log("🔵 OAuth redirect detected, completing authentication...");
-          await sdk.authenticate();
-          console.log("✅ Authentication complete");
-          window.history.replaceState({}, document.title, window.location.pathname);
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          try {
+            await sdk.authenticate();
+            console.log("✅ Authentication complete");
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch (authErr) {
+            console.error("❌ SDK authenticate failed:", authErr);
+            setError(`Auth failed: ${authErr instanceof Error ? authErr.message : String(authErr)}`);
+          }
         }
       } catch (err) {
         console.error("Auth initialization error:", err);
@@ -266,7 +282,7 @@ function App() {
 
   const slides = [
     {
-      title: "Your 2024 Wrapped",
+      title: "Your 2026 60 day span Wrapped",
       content: (
         <div className="title-slide">
           <div className="welcome-text">
