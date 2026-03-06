@@ -38,18 +38,135 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
   const slideRef = useRef<HTMLDivElement>(null);
+  const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch stats function
+  const getStats = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      console.log("🔵 Fetching user profile...");
+      const profile = await sdk.currentUser.profile();
+      console.log("✅ Profile fetched:", profile);
+      setUser(profile);
+
+      const newData: Record<TimePeriod, WrappedData | null> = {
+        short_term: null
+      };
+
+      const fetchPromises = TIME_PERIODS.map(async (period) => {
+        try {
+          console.log(`🔵 Fetching ${period.label} data...`);
+          const topTracks = await sdk.currentUser.topItems("tracks", period.key, 50);
+          console.log(`✅ Top tracks (${period.label}):`, topTracks?.items?.length, "items");
+          const topArtists = await sdk.currentUser.topItems("artists", period.key, 50);
+          console.log(`✅ Top artists (${period.label}):`, topArtists?.items?.length, "items");
+
+          if (!topTracks?.items || !topArtists?.items) {
+            throw new Error(`Failed to fetch data for ${period.label} - no items returned`);
+          }
+
+          // Calculate Top 5 Albums
+          const albumMap = new Map();
+          topTracks.items.forEach(t => {
+            if (t.album?.id && t.album.name && t.artists?.[0]) {
+              const id = t.album.id;
+              if (!albumMap.has(id)) {
+                albumMap.set(id, {
+                  name: t.album.name,
+                  artist: t.artists[0].name,
+                  image: t.album.images?.[0]?.url || '',
+                  count: 0
+                });
+              }
+              albumMap.get(id).count++;
+            }
+          });
+          const top5Albums = Array.from(albumMap.values())
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
+
+          // Calculate Top 5 Genres
+          const genreCounts: Record<string, number> = {};
+          topArtists.items.forEach(a => {
+            if (a.genres) {
+              a.genres.forEach(g => {
+                genreCounts[g] = (genreCounts[g] || 0) + 1;
+              });
+            }
+          });
+          const top5Genres = Object.keys(genreCounts)
+            .sort((a, b) => genreCounts[b] - genreCounts[a])
+            .slice(0, 5);
+
+          // Calculate unique artists
+          const uniqueArtistsSet = new Set<string>();
+          topTracks.items.forEach(t => {
+            t.artists?.forEach(a => uniqueArtistsSet.add(a.id));
+          });
+
+          // Calculate Total Minutes
+          const totalMs = topTracks.items.reduce((acc, t) => acc + (t.duration_ms || 0), 0);
+          const estimatedMins = Math.floor(totalMs / 60000);
+
+          // Calculate average track duration
+          const avgMs = totalMs / topTracks.items.length;
+          const avgDuration = Math.round(avgMs / 1000 / 60);
+
+          // Find most popular track
+          const mostPopular = topTracks.items.reduce((prev, current) => 
+            (current.popularity || 0) > (prev.popularity || 0) ? current : prev
+          );
+
+          // Get top genre count
+          const topGenreCount = genreCounts[top5Genres[0]] || 0;
+
+          newData[period.key] = {
+            tracks: topTracks.items.slice(0, 5),
+            artists: topArtists.items.slice(0, 5),
+            albums: top5Albums,
+            genres: top5Genres,
+            minutes: estimatedMins,
+            mostPopularTrack: mostPopular,
+            averageTrackDuration: avgDuration,
+            uniqueArtists: uniqueArtistsSet.size,
+            topGenreCount
+          };
+        } catch (err) {
+          console.error(`Error fetching ${period.label}:`, err);
+          newData[period.key] = null;
+        }
+      });
+
+      await Promise.all(fetchPromises);
+      setData(newData);
+
+      const hasData = Object.values(newData).some(d => d !== null);
+      if (!hasData) {
+        throw new Error("Failed to fetch data for any time period");
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
+      console.error("❌ Data Fetch Error:", err);
+      console.error("Error details:", { message: errorMessage, stack: err instanceof Error ? err.stack : 'N/A' });
+      setError(`Failed to load your wrap: ${errorMessage}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     const initAuth = async () => {
       try {
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
-        const error = params.get('error');
+        const authError = params.get('error');
         
-        if (error) {
-          console.error("❌ Spotify rejected auth:", error);
-          setError(`Spotify auth error: ${error}`);
+        if (authError) {
+          console.error("❌ Spotify rejected auth:", authError);
+          setError(`Spotify auth error: ${authError}`);
           return;
         }
         
@@ -60,10 +177,12 @@ function App() {
           try {
             await sdk.authenticate();
             console.log("✅ Authentication complete");
+            setAuthenticated(true);
             window.history.replaceState({}, document.title, window.location.pathname);
           } catch (authErr) {
             console.error("❌ SDK authenticate failed:", authErr);
             setError(`Auth failed: ${authErr instanceof Error ? authErr.message : String(authErr)}`);
+            return;
           }
         }
       } catch (err) {
@@ -71,127 +190,34 @@ function App() {
       }
     };
 
-    const getStats = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        console.log("🔵 Fetching user profile...");
-        const profile = await sdk.currentUser.profile();
-        console.log("✅ Profile fetched:", profile);
-        setUser(profile);
-
-        const newData: Record<TimePeriod, WrappedData | null> = {
-          short_term: null
-        };
-
-        const fetchPromises = TIME_PERIODS.map(async (period) => {
-          try {
-            console.log(`🔵 Fetching ${period.label} data...`);
-            const topTracks = await sdk.currentUser.topItems("tracks", period.key, 50);
-            console.log(`✅ Top tracks (${period.label}):`, topTracks?.items?.length, "items");
-            const topArtists = await sdk.currentUser.topItems("artists", period.key, 50);
-            console.log(`✅ Top artists (${period.label}):`, topArtists?.items?.length, "items");
-
-            if (!topTracks?.items || !topArtists?.items) {
-              throw new Error(`Failed to fetch data for ${period.label} - no items returned`);
-            }
-
-            // Calculate Top 5 Albums
-            const albumMap = new Map();
-            topTracks.items.forEach(t => {
-              if (t.album?.id && t.album.name && t.artists?.[0]) {
-                const id = t.album.id;
-                if (!albumMap.has(id)) {
-                  albumMap.set(id, {
-                    name: t.album.name,
-                    artist: t.artists[0].name,
-                    image: t.album.images?.[0]?.url || '',
-                    count: 0
-                  });
-                }
-                albumMap.get(id).count++;
-              }
-            });
-            const top5Albums = Array.from(albumMap.values())
-              .sort((a, b) => b.count - a.count)
-              .slice(0, 5);
-
-            // Calculate Top 5 Genres
-            const genreCounts: Record<string, number> = {};
-            topArtists.items.forEach(a => {
-              if (a.genres) {
-                a.genres.forEach(g => {
-                  genreCounts[g] = (genreCounts[g] || 0) + 1;
-                });
-              }
-            });
-            const top5Genres = Object.keys(genreCounts)
-              .sort((a, b) => genreCounts[b] - genreCounts[a])
-              .slice(0, 5);
-
-            // Calculate unique artists
-            const uniqueArtistsSet = new Set<string>();
-            topTracks.items.forEach(t => {
-              t.artists?.forEach(a => uniqueArtistsSet.add(a.id));
-            });
-
-            // Calculate Total Minutes
-            const totalMs = topTracks.items.reduce((acc, t) => acc + (t.duration_ms || 0), 0);
-            const estimatedMins = Math.floor(totalMs / 60000);
-
-            // Calculate average track duration
-            const avgMs = totalMs / topTracks.items.length;
-            const avgDuration = Math.round(avgMs / 1000 / 60);
-
-            // Find most popular track
-            const mostPopular = topTracks.items.reduce((prev, current) => 
-              (current.popularity || 0) > (prev.popularity || 0) ? current : prev
-            );
-
-            // Get top genre count
-            const topGenreCount = genreCounts[top5Genres[0]] || 0;
-
-            newData[period.key] = {
-              tracks: topTracks.items.slice(0, 5),
-              artists: topArtists.items.slice(0, 5),
-              albums: top5Albums,
-              genres: top5Genres,
-              minutes: estimatedMins,
-              mostPopularTrack: mostPopular,
-              averageTrackDuration: avgDuration,
-              uniqueArtists: uniqueArtistsSet.size,
-              topGenreCount
-            };
-          } catch (err) {
-            console.error(`Error fetching ${period.label}:`, err);
-            newData[period.key] = null;
-          }
-        });
-
-        await Promise.all(fetchPromises);
-        setData(newData);
-
-        const hasData = Object.values(newData).some(d => d !== null);
-        if (!hasData) {
-          throw new Error("Failed to fetch data for any time period");
-        }
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
-        console.error("❌ Data Fetch Error:", err);
-        console.error("Error details:", { message: errorMessage, stack: err instanceof Error ? err.stack : 'N/A' });
-        setError(`Failed to load your wrap: ${errorMessage}`);
-      } finally {
-        setLoading(false);
+    const runInitSequence = async () => {
+      await initAuth();
+      // Only fetch stats if user is authenticated
+      if (authenticated) {
+        await getStats();
       }
     };
 
-    const runInitSequence = async () => {
-      await initAuth();
-      await getStats();
-    };
-
     runInitSequence();
-  }, []);
+  }, [authenticated]);
+
+  // Set up auto-refresh every 1 minute when authenticated
+  useEffect(() => {
+    if (authenticated && user) {
+      console.log("⏰ Starting auto-refresh interval (1 minute)");
+      refreshIntervalRef.current = setInterval(() => {
+        console.log("🔄 Auto-refreshing data...");
+        getStats();
+      }, 60000); // 1 minute in milliseconds
+
+      return () => {
+        if (refreshIntervalRef.current) {
+          clearInterval(refreshIntervalRef.current);
+          console.log("⏹️ Stopped auto-refresh interval");
+        }
+      };
+    }
+  }, [authenticated, user]);
 
   const exportImage = async () => {
     if (!slideRef.current) return;
@@ -219,6 +245,41 @@ function App() {
   };
 
   const currentData = data['short_term'];
+
+  // Force login screen if not authenticated
+  if (!authenticated) {
+    return (
+      <div className="app-viewport">
+        <div className="login-screen">
+          <h1 className="big-text">SPOTIFY WRAPPED</h1>
+          <p style={{ color: '#b3b3b3', marginBottom: '20px' }}>
+            Connect your Spotify account to see your wrap
+          </p>
+          <button
+            className="share-btn"
+            disabled={loading}
+            onClick={async () => {
+              setLoading(true);
+              try {
+                console.log("🔵 Starting Spotify authentication...");
+                await sdk.authenticate();
+                setAuthenticated(true);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : "Authentication failed";
+                setError(msg);
+                console.error("Auth failed:", err);
+              } finally {
+                setLoading(false);
+              }
+            }}
+          >
+            {loading ? "Authenticating..." : "Login with Spotify"}
+          </button>
+          {error && <p style={{ color: '#ff6b6b', marginTop: '20px', fontSize: '12px' }}>{error}</p>}
+        </div>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -255,26 +316,9 @@ function App() {
         <div className="login-screen">
           <h1 className="big-text">SPOTIFY WRAPPED</h1>
           <p style={{ color: '#b3b3b3', marginBottom: '20px' }}>
-            {loading ? "Loading your stats..." : "Connect your Spotify to see your wrap"}
+            {loading ? "Loading your stats..." : "Getting your data..."}
           </p>
-          <button
-            className="share-btn"
-            disabled={loading}
-            onClick={async () => {
-              setLoading(true);
-              try {
-                await sdk.authenticate();
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : "Authentication failed";
-                setError(msg);
-                console.error("Auth failed:", err);
-              } finally {
-                setLoading(false);
-              }
-            }}
-          >
-            {loading ? "Authenticating..." : "Unlock Your Wrap"}
-          </button>
+          {loading && <div style={{ color: '#1db954', marginTop: '20px' }}>Loading...</div>}
         </div>
       </div>
     );
