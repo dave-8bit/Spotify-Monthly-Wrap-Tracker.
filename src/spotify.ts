@@ -5,12 +5,12 @@ const CLIENT_ID = "1fa712c9c91b4850b6557d382076827d";
 // Determine redirect URI based on environment
 const getRedirectUri = () => {
   if (typeof window === 'undefined') {
-    return 'http://localhost:3000'; // Fallback during SSR
+    return 'http://localhost:3000'; 
   }
   
   const origin = window.location.origin;
-  // Ensure no trailing slash for consistency
-  return origin.endsWith('/') ? origin.slice(0, -1) : origin;
+  // Add trailing slash to match Spotify's normalization
+  return origin.endsWith('/') ? origin : origin + '/';
 };
 
 const REDIRECT_URI = getRedirectUri();
