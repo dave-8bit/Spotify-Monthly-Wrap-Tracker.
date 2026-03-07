@@ -24,3 +24,5 @@ export const sdk = SpotifyApi.withUserAuthorization(
 );
 
 console.log("SDK initialized with URI:", REDIRECT_URI);
+
+//When it says login with spotifyi need the standard spotify login page to show up and also i need it to update every 20 seconds cause i dont need the data hardcoded, i need to see displacfement at all times. Every data should be perfect, genres,songs,artist and other standard spotify wrap. I need it perfect and sleeky. Track data within seconds,once i refresh the page refresh the data. I need it to start from the past 60 days to whatever. The starting point should be 60 days ago till date.

@@ -16,35 +16,21 @@ interface WrappedData {
   topGenreCount: number;
 }
 
-type TimePeriod = 'short_term';
-
-interface TimePeriodConfig {
-  key: TimePeriod;
-  label: string;
-  description: string;
-}
-
-const TIME_PERIODS: TimePeriodConfig[] = [
-  { key: 'short_term', label: 'Last 60 Days', description: 'Last 60 days' }
-];
-
 function App() {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [data, setData] = useState<Record<TimePeriod, WrappedData | null>>({
-    short_term: null
-  });
-
+  const [data, setData] = useState<WrappedData | null>(null);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const slideRef = useRef<HTMLDivElement>(null);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch stats function
-  const getStats = async () => {
-    setLoading(true);
+  const getStats = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     setError(null);
     try {
       console.log("🔵 Fetching user profile...");
@@ -52,113 +38,111 @@ function App() {
       console.log("✅ Profile fetched:", profile);
       setUser(profile);
 
-      const newData: Record<TimePeriod, WrappedData | null> = {
-        short_term: null
-      };
+      try {
+        console.log("🔵 Fetching top tracks (last 60 days)...");
+        const topTracks = await sdk.currentUser.topItems("tracks", "short_term", 50);
+        
+        if (!topTracks?.items || topTracks.items.length === 0) {
+          throw new Error("No tracks found in last 60 days");
+        }
 
-      const fetchPromises = TIME_PERIODS.map(async (period) => {
-        try {
-          console.log(`🔵 Fetching ${period.label} data...`);
-          const topTracks = await sdk.currentUser.topItems("tracks", period.key, 50);
-          console.log(`✅ Top tracks (${period.label}):`, topTracks?.items?.length, "items");
-          const topArtists = await sdk.currentUser.topItems("artists", period.key, 50);
-          console.log(`✅ Top artists (${period.label}):`, topArtists?.items?.length, "items");
+        console.log("✅ Top tracks:", topTracks.items.length);
 
-          if (!topTracks?.items || !topArtists?.items) {
-            throw new Error(`Failed to fetch data for ${period.label} - no items returned`);
-          }
+        console.log("🔵 Fetching top artists...");
+        const topArtists = await sdk.currentUser.topItems("artists", "short_term", 50);
+        
+        if (!topArtists?.items || topArtists.items.length === 0) {
+          throw new Error("No artists found in last 60 days");
+        }
 
-          // Calculate Top 5 Albums
-          const albumMap = new Map();
-          topTracks.items.forEach(t => {
-            if (t.album?.id && t.album.name && t.artists?.[0]) {
-              const id = t.album.id;
-              if (!albumMap.has(id)) {
-                albumMap.set(id, {
-                  name: t.album.name,
-                  artist: t.artists[0].name,
-                  image: t.album.images?.[0]?.url || '',
-                  count: 0
-                });
-              }
-              albumMap.get(id).count++;
-            }
-          });
-          const top5Albums = Array.from(albumMap.values())
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 5);
+        console.log("✅ Top artists:", topArtists.items.length);
 
-          // Calculate Top 5 Genres
-          const genreCounts: Record<string, number> = {};
-          topArtists.items.forEach(a => {
-            if (a.genres) {
-              a.genres.forEach(g => {
-                genreCounts[g] = (genreCounts[g] || 0) + 1;
+        // Calculate Top Albums
+        const albumMap = new Map();
+        topTracks.items.forEach(t => {
+          if (t.album?.id && t.album.name && t.artists?.[0]) {
+            const id = t.album.id;
+            if (!albumMap.has(id)) {
+              albumMap.set(id, {
+                name: t.album.name,
+                artist: t.artists[0].name,
+                image: t.album.images?.[0]?.url || '',
+                count: 0
               });
             }
-          });
-          const top5Genres = Object.keys(genreCounts)
-            .sort((a, b) => genreCounts[b] - genreCounts[a])
-            .slice(0, 5);
+            albumMap.get(id).count++;
+          }
+        });
+        const topAlbums = Array.from(albumMap.values())
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
 
-          // Calculate unique artists
-          const uniqueArtistsSet = new Set<string>();
-          topTracks.items.forEach(t => {
-            t.artists?.forEach(a => uniqueArtistsSet.add(a.id));
-          });
+        // Calculate Genres
+        const genreCounts: Record<string, number> = {};
+        topArtists.items.forEach(a => {
+          if (a.genres && a.genres.length > 0) {
+            a.genres.forEach(g => {
+              genreCounts[g] = (genreCounts[g] || 0) + 1;
+            });
+          }
+        });
+        const topGenres = Object.keys(genreCounts)
+          .sort((a, b) => genreCounts[b] - genreCounts[a])
+          .slice(0, 5);
 
-          // Calculate Total Minutes
-          const totalMs = topTracks.items.reduce((acc, t) => acc + (t.duration_ms || 0), 0);
-          const estimatedMins = Math.floor(totalMs / 60000);
+        // Calculate unique artists
+        const uniqueArtistsSet = new Set<string>();
+        topTracks.items.forEach(t => {
+          t.artists?.forEach(a => uniqueArtistsSet.add(a.id));
+        });
 
-          // Calculate average track duration
-          const avgMs = totalMs / topTracks.items.length;
-          const avgDuration = Math.round(avgMs / 1000 / 60);
+        // Calculate total minutes
+        const totalMs = topTracks.items.reduce((acc, t) => acc + (t.duration_ms || 0), 0);
+        const totalMinutes = Math.floor(totalMs / 60000);
 
-          // Find most popular track
-          const mostPopular = topTracks.items.reduce((prev, current) => 
-            (current.popularity || 0) > (prev.popularity || 0) ? current : prev
-          );
+        // Calculate average duration
+        const avgMs = totalMs / topTracks.items.length;
+        const avgDuration = Math.round(avgMs / 1000 / 60);
 
-          // Get top genre count
-          const topGenreCount = genreCounts[top5Genres[0]] || 0;
+        // Find most popular track
+        const mostPopular = topTracks.items.reduce((prev, current) => 
+          (current.popularity || 0) > (prev.popularity || 0) ? current : prev
+        );
 
-          newData[period.key] = {
-            tracks: topTracks.items.slice(0, 5),
-            artists: topArtists.items.slice(0, 5),
-            albums: top5Albums,
-            genres: top5Genres,
-            minutes: estimatedMins,
-            mostPopularTrack: mostPopular,
-            averageTrackDuration: avgDuration,
-            uniqueArtists: uniqueArtistsSet.size,
-            topGenreCount
-          };
-        } catch (err) {
-          console.error(`Error fetching ${period.label}:`, err);
-          newData[period.key] = null;
-        }
-      });
+        // Get top genre count
+        const topGenreCount = genreCounts[topGenres[0]] || 0;
 
-      await Promise.all(fetchPromises);
-      setData(newData);
+        const newData: WrappedData = {
+          tracks: topTracks.items.slice(0, 5),
+          artists: topArtists.items.slice(0, 5),
+          albums: topAlbums,
+          genres: topGenres,
+          minutes: totalMinutes,
+          mostPopularTrack: mostPopular,
+          averageTrackDuration: avgDuration,
+          uniqueArtists: uniqueArtistsSet.size,
+          topGenreCount
+        };
 
-      const hasData = Object.values(newData).some(d => d !== null);
-      if (!hasData) {
-        throw new Error("Failed to fetch data for any time period");
+        setData(newData);
+        setLastUpdate(new Date());
+        console.log("✅ Data updated successfully");
+      } catch (err) {
+        console.error("Error fetching stats:", err);
+        throw err;
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
       console.error("❌ Data Fetch Error:", err);
-      console.error("Error details:", { message: errorMessage, stack: err instanceof Error ? err.stack : 'N/A' });
       setError(`Failed to load your wrap: ${errorMessage}`);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
+  // Initial auth and data fetch
   useEffect(() => {
-    const initAuth = async () => {
+    const initApp = async () => {
       try {
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
@@ -171,18 +155,17 @@ function App() {
         }
         
         if (code) {
-          console.log("🔵 OAuth redirect detected, completing authentication...");
-          await new Promise(resolve => setTimeout(resolve, 100));
-          
+          console.log("🔵 OAuth redirect detected, exchanging code...");
           try {
             await sdk.authenticate();
             console.log("✅ Authentication complete");
             setAuthenticated(true);
             window.history.replaceState({}, document.title, window.location.pathname);
+            // Fetch data after auth succeeds
+            await getStats();
           } catch (authErr) {
             console.error("❌ SDK authenticate failed:", authErr);
             setError(`Auth failed: ${authErr instanceof Error ? authErr.message : String(authErr)}`);
-            return;
           }
         }
       } catch (err) {
@@ -190,25 +173,19 @@ function App() {
       }
     };
 
-    const runInitSequence = async () => {
-      await initAuth();
-      // Only fetch stats if user is authenticated
-      if (authenticated) {
-        await getStats();
-      }
-    };
+    initApp();
+  }, []);
 
-    runInitSequence();
-  }, [authenticated]);
-
-  // Set up auto-refresh every 1 minute when authenticated
+  // Auto-refresh every 20 seconds when authenticated
   useEffect(() => {
-    if (authenticated && user) {
-      console.log("⏰ Starting auto-refresh interval (1 minute)");
+    if (authenticated && user && data) {
+      console.log("⏰ Starting auto-refresh interval (20 seconds)");
+      
+      // Refresh immediately, then every 20 seconds
       refreshIntervalRef.current = setInterval(() => {
         console.log("🔄 Auto-refreshing data...");
-        getStats();
-      }, 60000); // 1 minute in milliseconds
+        getStats(false); // Don't show loading indicator on auto-refresh
+      }, 20000); // 20 seconds
 
       return () => {
         if (refreshIntervalRef.current) {
@@ -217,7 +194,7 @@ function App() {
         }
       };
     }
-  }, [authenticated, user]);
+  }, [authenticated, user, data]);
 
   const exportImage = async () => {
     if (!slideRef.current) return;
@@ -232,7 +209,7 @@ function App() {
         allowTaint: true
       });
       const link = document.createElement('a');
-      link.download = `spotify-wrapped-last-60-days.png`;
+      link.download = `spotify-wrapped-${new Date().toISOString().slice(0, 10)}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     } catch (err) {
@@ -243,8 +220,6 @@ function App() {
       setExportLoading(false);
     }
   };
-
-  const currentData = data['short_term'];
 
   // Force login screen if not authenticated
   if (!authenticated) {
@@ -263,7 +238,6 @@ function App() {
               try {
                 console.log("🔵 Starting Spotify authentication...");
                 await sdk.authenticate();
-                setAuthenticated(true);
               } catch (err) {
                 const msg = err instanceof Error ? err.message : "Authentication failed";
                 setError(msg);
@@ -273,7 +247,7 @@ function App() {
               }
             }}
           >
-            {loading ? "Authenticating..." : "Login with Spotify"}
+            {loading ? "Connecting to Spotify..." : "Login with Spotify"}
           </button>
           {error && <p style={{ color: '#ff6b6b', marginTop: '20px', fontSize: '12px' }}>{error}</p>}
         </div>
@@ -281,7 +255,7 @@ function App() {
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="app-viewport">
         <div className="login-screen">
@@ -291,34 +265,25 @@ function App() {
             className="share-btn"
             onClick={async () => {
               setError(null);
-              setLoading(true);
-              try {
-                await sdk.authenticate();
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : "Authentication failed";
-                setError(msg);
-                console.error("Auth failed:", err);
-              } finally {
-                setLoading(false);
-              }
+              await getStats();
             }}
           >
-            {loading ? "Authenticating..." : "Try Again"}
+            Retry
           </button>
         </div>
       </div>
     );
   }
 
-  if (!user || !currentData) {
+  if (!user || !data) {
     return (
       <div className="app-viewport">
         <div className="login-screen">
           <h1 className="big-text">SPOTIFY WRAPPED</h1>
           <p style={{ color: '#b3b3b3', marginBottom: '20px' }}>
-            {loading ? "Loading your stats..." : "Getting your data..."}
+            Loading your 60-day wrap...
           </p>
-          {loading && <div style={{ color: '#1db954', marginTop: '20px' }}>Loading...</div>}
+          <div style={{ color: '#1db954', marginTop: '20px' }}>⏳</div>
         </div>
       </div>
     );
@@ -326,7 +291,7 @@ function App() {
 
   const slides = [
     {
-      title: "Your 2026 60 day span Wrapped",
+      title: "Your Last 60 Days",
       content: (
         <div className="title-slide">
           <div className="welcome-text">
@@ -338,39 +303,39 @@ function App() {
     },
     {
       title: "The Vibe",
-      content: <div className="big-text genre-spotlight">{currentData.genres[0] || "Music"}</div>,
-      subtitle: `You listened to ${currentData.topGenreCount} different ${currentData.genres[0]} tracks`
+      content: <div className="big-text genre-spotlight">{data.genres[0] || "Music"}</div>,
+      subtitle: `You listened to ${data.topGenreCount} different ${data.genres[0]} tracks`
     },
     {
-      title: "Top Artists",
-      list: currentData.artists.map(a => a.name)
+      title: "Top 5 Artists",
+      list: data.artists.map(a => a.name)
     },
     {
       title: "Most Streamed Songs",
-      list: currentData.tracks.map(t => t.name)
+      list: data.tracks.map(t => t.name)
     },
     {
       title: "Top Albums",
-      list: currentData.albums.map(al => `${al.name} by ${al.artist}`)
+      list: data.albums.map(al => `${al.name} by ${al.artist}`)
     },
     {
       title: "Top Genres",
-      list: currentData.genres
+      list: data.genres
     },
     {
       title: "Your Stats",
       content: (
         <div className="stats-grid">
           <div className="stat-card">
-            <div className="stat-value">{currentData.uniqueArtists}</div>
+            <div className="stat-value">{data.uniqueArtists}</div>
             <div className="stat-label">Unique Artists</div>
           </div>
           <div className="stat-card">
-            <div className="stat-value">{currentData.averageTrackDuration}m</div>
+            <div className="stat-value">{data.averageTrackDuration}m</div>
             <div className="stat-label">Avg Track Length</div>
           </div>
           <div className="stat-card">
-            <div className="stat-value">{currentData.mostPopularTrack?.popularity || 0}</div>
+            <div className="stat-value">{data.mostPopularTrack?.popularity || 0}</div>
             <div className="stat-label">Top Track Popularity</div>
           </div>
         </div>
@@ -380,9 +345,9 @@ function App() {
       title: "The Damage",
       content: (
         <div className="share-slide">
-          <div className="big-mins">{currentData.minutes.toLocaleString()} <br /><span>minutes played</span></div>
+          <div className="big-mins">{data.minutes.toLocaleString()} <br /><span>minutes played</span></div>
           <div className="time-context">
-            That's {Math.round(currentData.minutes / 1440)} days of non-stop music
+            That's {Math.round(data.minutes / 1440)} days of non-stop music
           </div>
           <button 
             className="share-btn" 
@@ -398,12 +363,15 @@ function App() {
 
   return (
     <div className="app-viewport" onClick={() => setCurrentSlide((s) => (s + 1) % slides.length)}>
-      {/* Header with User */}
       <div className="slide-header">
         <div className="slide-count">{currentSlide + 1} / {slides.length}</div>
+        {lastUpdate && (
+          <div className="last-update">
+            Updated {lastUpdate.toLocaleTimeString()}
+          </div>
+        )}
       </div>
 
-      {/* Progress Bar */}
       <div className="progress-container">
         {slides.map((_, i) => (
           <div 
@@ -417,7 +385,6 @@ function App() {
         ))}
       </div>
 
-      {/* Slide Content */}
       <div className={`slide-content slide-${currentSlide}`} ref={slideRef}>
         <h3>{slides[currentSlide].title}</h3>
         {slides[currentSlide].subtitle && (
@@ -432,7 +399,6 @@ function App() {
         ) : slides[currentSlide].content}
       </div>
 
-      {/* Navigation hint */}
       <div className="nav-hint">
         {currentSlide < slides.length - 1 ? "Click or press → to continue" : "You've reached the end"}
       </div>
